@@ -11,6 +11,1629 @@
 </head>
 <body>
   <div id="root"></div>
-  <script type="text/babel" src="name-vetter.jsx"></script>
+  <script type="text/babel">
+/*
+  NameVetter v3 - Startup Name Ideation & Vetting Tool
+
+  TO GET ACCURATE CHECKS:
+  1. Install dependencies:  pip install flask flask-cors python-whois requests
+  2. Start the server:      python server.py
+  3. Open this .jsx file in your browser / React dev environment
+  4. The status dot in the header turns green when the backend is connected
+
+  Without the server, the app still works but domain/social checks will be limited.
+*/
+const { useState, useMemo, useCallback, useRef } = React;
+
+// ─── Name Generation Engine ───────────────────────────────────────────
+const PREFIXES = ["Nova", "Vero", "Axi", "Zen", "Ori", "Lumi", "Neo", "Hexa", "Prio", "Clar", "Viva", "Evo", "Alti", "Flux", "Syner"];
+const SUFFIXES = ["ly", "ify", "hub", "lab", "io", "ai", "fy", "ix", "os", "era", "ium", "ova", "ent", "ist", "ica"];
+const TECH_WORDS = ["sync", "flow", "wave", "spark", "shift", "stack", "grid", "dash", "path", "core", "link", "mesh", "node", "loop", "dock"];
+const POWER_WORDS = ["bold", "prime", "peak", "rise", "leap", "swift", "bright", "forge", "craft", "helm", "quest", "vault", "sage", "crest", "apex"];
+
+function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase(); }
+
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+  return dp[m][n];
+}
+
+// ─── Markdown Context Parser ──────────────────────────────────────────
+const STOP_WORDS = new Set(["the","a","an","is","are","was","were","be","been","being","have","has","had","do","does","did","will","would","shall","should","may","might","must","can","could","and","but","or","nor","not","so","yet","for","at","by","in","on","to","of","with","from","up","out","off","over","into","that","this","it","its","we","our","they","their","i","my","you","your","he","she","him","her","who","what","which","where","when","how","all","each","every","both","few","more","most","other","some","such","no","only","same","than","too","very","just","about","also","then","make","like","get","go","come","take","know","see","think","want","give","use","find","tell","ask","work","seem","feel","try","leave","call","need","become","keep","let","begin","show","hear","play","run","move","live","believe","bring","happen","provide","help","turn","start","point","read","pay","understand","word","follow","stop","create","speak","allow","lead","spend","grow","open","walk","win","offer","remember","company","business","using","based","well","new","way","many","people","first","also","through","these","include","between","while","such","been","being","ensure","across","within","around","towards","along","during","after","before","since","still","already","further","much","now","even","whether","really","going","things","something","anything","everything"]);
+
+function parseMarkdownContext(rawText) {
+  const lines = rawText.split("\n");
+
+  // Extract headings as primary themes
+  const headings = [];
+  const boldPhrases = [];
+  const listItems = [];
+  const allText = [];
+
+  lines.forEach(line => {
+    const trimmed = line.trim();
+    // Headings
+    const headingMatch = trimmed.match(/^#{1,6}\s+(.+)/);
+    if (headingMatch) {
+      headings.push(headingMatch[1].replace(/[#*_`]/g, "").trim());
+    }
+    // Bold text
+    const boldMatches = trimmed.matchAll(/\*\*(.+?)\*\*/g);
+    for (const m of boldMatches) boldPhrases.push(m[1].trim());
+    const boldMatches2 = trimmed.matchAll(/__(.+?)__/g);
+    for (const m of boldMatches2) boldPhrases.push(m[1].trim());
+    // List items
+    if (/^[-*+]\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed)) {
+      listItems.push(trimmed.replace(/^[-*+\d.]\s+/, "").replace(/[*_`]/g, "").trim());
+    }
+    // All text (strip markdown syntax)
+    allText.push(trimmed.replace(/[#*_`\[\]()>|]/g, " ").trim());
+  });
+
+  const fullText = allText.join(" ").toLowerCase();
+
+  // Extract top keywords by frequency
+  const wordFreq = {};
+  fullText.replace(/[^a-z\s]/g, "").split(/\s+/).forEach(w => {
+    if (w.length > 2 && !STOP_WORDS.has(w)) {
+      wordFreq[w] = (wordFreq[w] || 0) + 1;
+    }
+  });
+
+  const topKeywords = Object.entries(wordFreq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 30)
+    .map(([word, count]) => ({ word, count }));
+
+  // Extract multi-word phrases (bigrams) from bold text and headings
+  const importantText = [...headings, ...boldPhrases].join(" ").toLowerCase();
+  const importantWords = importantText
+    .replace(/[^a-z\s]/g, "")
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !STOP_WORDS.has(w));
+
+  // Detect tone/sentiment signals
+  const toneSignals = {
+    innovative: /innovat|disrupt|cutting.edge|breakthrough|pioneer|revolution|transform/i.test(fullText),
+    trustworthy: /trust|reliable|secure|proven|established|credible|transparent/i.test(fullText),
+    fast: /fast|quick|rapid|speed|instant|agile|efficient|streamlin/i.test(fullText),
+    friendly: /friend|welcom|warm|approachable|accessible|inclusive|communit/i.test(fullText),
+    premium: /premium|luxury|elite|exclusive|high.end|sophisticated|curated/i.test(fullText),
+    growth: /grow|scale|expand|amplif|accelerat|momentum|trajectory/i.test(fullText),
+    sustainable: /sustain|green|eco|environmental|climate|carbon|renewable|conscious/i.test(fullText),
+    creative: /creativ|design|artis|craft|imagin|inspir|vision/i.test(fullText),
+  };
+
+  // Detect industry signals
+  const industrySignals = [];
+  if (/tech|software|app|platform|digital|saas|cloud|data|ai|machine.learn/i.test(fullText)) industrySignals.push("Technology");
+  if (/health|medical|wellness|patient|care|clinic|therap/i.test(fullText)) industrySignals.push("Healthcare");
+  if (/financ|bank|invest|payment|money|fund|capital/i.test(fullText)) industrySignals.push("Finance");
+  if (/educat|learn|teach|student|course|school|train/i.test(fullText)) industrySignals.push("Education");
+  if (/ecommerce|shop|retail|store|product|merchant|marketplace/i.test(fullText)) industrySignals.push("E-commerce");
+  if (/food|beverage|restaurant|meal|recipe|cook|dining/i.test(fullText)) industrySignals.push("Food & Beverage");
+  if (/market|advertis|brand|campaign|content|social.media|seo/i.test(fullText)) industrySignals.push("Marketing");
+  if (/fitness|gym|exercise|workout|sport|athlet/i.test(fullText)) industrySignals.push("Fitness & Wellness");
+
+  return {
+    headings,
+    boldPhrases,
+    listItems,
+    topKeywords,
+    importantWords,
+    toneSignals,
+    industrySignals,
+    fullText,
+    wordFreq,
+    documentCount: 1,
+  };
+}
+
+function mergeContexts(existing, newCtx) {
+  if (!existing) return newCtx;
+  const merged = {
+    headings: [...existing.headings, ...newCtx.headings],
+    boldPhrases: [...existing.boldPhrases, ...newCtx.boldPhrases],
+    listItems: [...existing.listItems, ...newCtx.listItems],
+    importantWords: [...existing.importantWords, ...newCtx.importantWords],
+    fullText: existing.fullText + " " + newCtx.fullText,
+    documentCount: existing.documentCount + 1,
+    toneSignals: {},
+    industrySignals: [...new Set([...existing.industrySignals, ...newCtx.industrySignals])],
+    wordFreq: { ...existing.wordFreq },
+  };
+  // Merge word frequencies
+  Object.entries(newCtx.wordFreq).forEach(([w, c]) => {
+    merged.wordFreq[w] = (merged.wordFreq[w] || 0) + c;
+  });
+  // Recalculate top keywords
+  merged.topKeywords = Object.entries(merged.wordFreq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 30)
+    .map(([word, count]) => ({ word, count }));
+  // Merge tone signals (OR)
+  Object.keys(newCtx.toneSignals).forEach(k => {
+    merged.toneSignals[k] = existing.toneSignals[k] || newCtx.toneSignals[k];
+  });
+  return merged;
+}
+
+// ─── Alignment Scoring ────────────────────────────────────────────────
+function scoreAlignment(name, context) {
+  if (!context) return null;
+
+  const nameLower = name.toLowerCase();
+  const nameChars = nameLower.replace(/[^a-z]/g, "");
+  let score = 0;
+  let maxScore = 0;
+  const reasons = [];
+
+  // 1. Direct keyword match (name contains a top keyword or vice versa) - up to 30 pts
+  maxScore += 30;
+  let keywordHits = 0;
+  const top15 = context.topKeywords.slice(0, 15);
+  top15.forEach(({ word }) => {
+    if (nameChars.includes(word) || word.includes(nameChars)) {
+      keywordHits++;
+    } else if (nameChars.length >= 4 && word.length >= 4) {
+      // Partial overlap: check if 4+ char substring matches
+      for (let i = 0; i <= nameChars.length - 4; i++) {
+        const sub = nameChars.slice(i, i + 4);
+        if (word.includes(sub)) { keywordHits += 0.5; break; }
+      }
+    }
+  });
+  const kwScore = Math.min(30, Math.round((keywordHits / Math.max(top15.length * 0.3, 1)) * 30));
+  score += kwScore;
+  if (keywordHits >= 1) reasons.push(`Contains ${Math.floor(keywordHits)} keyword match${keywordHits >= 2 ? "es" : ""}`);
+
+  // 2. Important word overlap (headings + bold) - up to 25 pts
+  maxScore += 25;
+  let impHits = 0;
+  const uniqueImp = [...new Set(context.importantWords)];
+  uniqueImp.slice(0, 20).forEach(w => {
+    if (nameChars.includes(w.slice(0, 4)) || w.includes(nameChars.slice(0, 4))) {
+      impHits++;
+    }
+  });
+  const impScore = Math.min(25, Math.round((impHits / Math.max(uniqueImp.length * 0.2, 1)) * 25));
+  score += impScore;
+  if (impHits >= 1) reasons.push("Echoes key themes from docs");
+
+  // 3. Tone alignment - up to 20 pts
+  maxScore += 20;
+  const activeTones = Object.entries(context.toneSignals).filter(([, v]) => v).map(([k]) => k);
+  if (activeTones.length > 0) {
+    // Map tone signals to word associations
+    const toneWordMap = {
+      innovative: ["nova", "neo", "evo", "flux", "shift", "spark", "wave", "ori", "axi"],
+      trustworthy: ["vero", "clar", "prio", "core", "helm", "sage", "vault", "prime"],
+      fast: ["swift", "dash", "leap", "flow", "sync", "rush", "bolt", "rapid"],
+      friendly: ["viva", "lumi", "bright", "warm", "hub", "link", "mesh"],
+      premium: ["alti", "apex", "crest", "prime", "peak", "hexa", "lux"],
+      growth: ["rise", "leap", "peak", "forge", "bold", "quest", "path"],
+      sustainable: ["green", "eco", "nova", "zen", "ori", "flow", "bright"],
+      creative: ["craft", "forge", "spark", "lumi", "viva", "wave", "flow"],
+    };
+    let toneHits = 0;
+    activeTones.forEach(t => {
+      const assoc = toneWordMap[t] || [];
+      assoc.forEach(w => {
+        if (nameChars.includes(w)) toneHits++;
+      });
+    });
+    const toneScore = Math.min(20, toneHits * 7);
+    score += toneScore;
+    if (toneHits > 0) reasons.push(`Aligns with ${activeTones.slice(0, 2).join(", ")} tone`);
+  }
+
+  // 4. Name length and pronounceability - up to 10 pts
+  maxScore += 10;
+  const lenScore = nameChars.length >= 4 && nameChars.length <= 10 ? 10 : nameChars.length <= 12 ? 5 : 2;
+  score += lenScore;
+  if (lenScore >= 8) reasons.push("Good length for branding");
+
+  // 5. Uniqueness bonus (not a common English word) - up to 15 pts
+  maxScore += 15;
+  const commonWords = new Set(["the", "and", "for", "are", "but", "not", "you", "all", "can", "had", "her", "was", "one", "our", "out", "day", "get", "has", "him", "his", "how", "its", "may", "new", "now", "old", "see", "way", "who", "did", "got", "let", "say", "she", "too", "use"]);
+  const isCommon = commonWords.has(nameChars);
+  const uniqScore = isCommon ? 0 : 15;
+  score += uniqScore;
+
+  const pct = Math.round((score / maxScore) * 100);
+
+  return {
+    score: pct,
+    label: pct >= 75 ? "Strong" : pct >= 50 ? "Good" : pct >= 30 ? "Fair" : "Weak",
+    color: pct >= 75 ? "text-green-400" : pct >= 50 ? "text-blue-400" : pct >= 30 ? "text-yellow-400" : "text-gray-400",
+    bgColor: pct >= 75 ? "bg-green-900/30 border-green-800" : pct >= 50 ? "bg-blue-900/30 border-blue-800" : pct >= 30 ? "bg-yellow-900/30 border-yellow-800" : "bg-gray-800/30 border-gray-700",
+    barColor: pct >= 75 ? "bg-green-500" : pct >= 50 ? "bg-blue-500" : pct >= 30 ? "bg-yellow-500" : "bg-gray-500",
+    reasons,
+  };
+}
+
+
+function extractKeywords(description) {
+  return description.toLowerCase()
+    .replace(/[^a-z\s]/g, "")
+    .split(/\s+/)
+    .filter(w => w.length > 2 && !STOP_WORDS.has(w))
+    .slice(0, 8);
+}
+
+function generateNames(description, industry, tone, customKeywords, contextKeywords) {
+  const keywords = [...extractKeywords(description), ...customKeywords.filter(k => k.trim()), ...contextKeywords];
+  const uniqueKw = [...new Set(keywords)].slice(0, 12);
+  if (uniqueKw.length === 0) return [];
+
+  const names = new Set();
+  const rand = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+  // Strategy 1: Keyword + Suffix
+  uniqueKw.forEach(kw => {
+    SUFFIXES.forEach(suf => {
+      const name = capitalize(kw) + suf;
+      if (name.length >= 4 && name.length <= 14) names.add(name);
+    });
+  });
+
+  // Strategy 2: Prefix + Keyword
+  uniqueKw.forEach(kw => {
+    PREFIXES.forEach(pre => {
+      const name = pre + capitalize(kw);
+      if (name.length <= 14) names.add(name);
+    });
+  });
+
+  // Strategy 3: Compound keywords
+  for (let i = 0; i < uniqueKw.length; i++) {
+    for (let j = 0; j < uniqueKw.length; j++) {
+      if (i !== j) {
+        const name = capitalize(uniqueKw[i]) + capitalize(uniqueKw[j]);
+        if (name.length <= 14) names.add(name);
+      }
+    }
+  }
+
+  // Strategy 4: Keyword + Tech/Power word
+  const wordPool = tone === "techy" ? TECH_WORDS : tone === "bold" ? POWER_WORDS : [...TECH_WORDS, ...POWER_WORDS];
+  uniqueKw.forEach(kw => {
+    wordPool.forEach(w => {
+      names.add(capitalize(kw) + capitalize(w));
+      names.add(capitalize(w) + capitalize(kw));
+    });
+  });
+
+  // Strategy 5: Portmanteau
+  for (let i = 0; i < uniqueKw.length; i++) {
+    for (let j = 0; j < uniqueKw.length; j++) {
+      if (i !== j && uniqueKw[i].length >= 3 && uniqueKw[j].length >= 3) {
+        const half1 = uniqueKw[i].slice(0, Math.ceil(uniqueKw[i].length * 0.6));
+        const half2 = uniqueKw[j].slice(Math.floor(uniqueKw[j].length * 0.4));
+        const name = capitalize(half1 + half2);
+        if (name.length >= 4 && name.length <= 12) names.add(name);
+      }
+    }
+  }
+
+  // Strategy 6: Abstract / invented
+  uniqueKw.forEach(kw => {
+    const vowels = kw.match(/[aeiou]/g) || ["a"];
+    const consonants = kw.match(/[^aeiou]/g) || ["n"];
+    for (let t = 0; t < 3; t++) {
+      let invented = "";
+      for (let k = 0; k < 3; k++) {
+        invented += rand(consonants) + rand(vowels);
+      }
+      const final = capitalize(invented) + rand(["a", "o", "i", "ia", "on", "is"]);
+      if (final.length >= 4 && final.length <= 10) names.add(final);
+    }
+  });
+
+  // Shuffle and return 20
+  const arr = Array.from(names);
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.slice(0, 20);
+}
+
+// ─── Social Media Platform Config ─────────────────────────────────────
+const SOCIAL_PLATFORMS = [
+  { name: "Instagram", icon: "IG", urlTemplate: (h) => `https://www.instagram.com/${h}/`, color: "#E1306C" },
+  { name: "TikTok", icon: "TT", urlTemplate: (h) => `https://www.tiktok.com/@${h}`, color: "#000000" },
+  { name: "YouTube", icon: "YT", urlTemplate: (h) => `https://www.youtube.com/@${h}`, color: "#FF0000" },
+  { name: "X (Twitter)", icon: "X", urlTemplate: (h) => `https://x.com/${h}`, color: "#000000" },
+  { name: "Facebook", icon: "FB", urlTemplate: (h) => `https://www.facebook.com/${h}`, color: "#1877F2" },
+  { name: "LinkedIn", icon: "LI", urlTemplate: (h) => `https://www.linkedin.com/company/${h}`, color: "#0A66C2" },
+  { name: "Threads", icon: "TH", urlTemplate: (h) => `https://www.threads.net/@${h}`, color: "#000000" },
+];
+
+const DOMAIN_EXTENSIONS = [".com", ".co", ".io", ".net", ".org", ".ai"];
+
+const US_STATES = [
+  { code: "AL", name: "Alabama", url: "https://www.sos.alabama.gov/government-records/business-entity-records" },
+  { code: "AK", name: "Alaska", url: "https://www.commerce.alaska.gov/cbp/main/search/entities" },
+  { code: "AZ", name: "Arizona", url: "https://ecorp.azcc.gov/EntitySearch/Index" },
+  { code: "AR", name: "Arkansas", url: "https://www.sos.arkansas.gov/corps/search_all.php" },
+  { code: "CA", name: "California", url: "https://bizfileonline.sos.ca.gov/search/business" },
+  { code: "CO", name: "Colorado", url: "https://www.sos.state.co.us/biz/BusinessEntityCriteriaExt.do" },
+  { code: "CT", name: "Connecticut", url: "https://service.ct.gov/business/s/onlinebusinesssearch" },
+  { code: "DE", name: "Delaware", url: "https://icis.corp.delaware.gov/ecorp/entitysearch/namesearch.aspx" },
+  { code: "FL", name: "Florida", url: "https://search.sunbiz.org/Inquiry/CorporationSearch/ByName" },
+  { code: "GA", name: "Georgia", url: "https://ecorp.sos.ga.gov/BusinessSearch" },
+  { code: "HI", name: "Hawaii", url: "https://hbe.ehawaii.gov/documents/search.html" },
+  { code: "ID", name: "Idaho", url: "https://sosbiz.idaho.gov/search/business" },
+  { code: "IL", name: "Illinois", url: "https://www.ilsos.gov/corporatellc/" },
+  { code: "IN", name: "Indiana", url: "https://bsd.sos.in.gov/publicbusinesssearch" },
+  { code: "IA", name: "Iowa", url: "https://sos.iowa.gov/search/business/(S(...))/search.aspx" },
+  { code: "KS", name: "Kansas", url: "https://www.kansas.gov/bess/flow/main?execution=e2s1" },
+  { code: "KY", name: "Kentucky", url: "https://web.sos.ky.gov/ftshow/(S(...))/default.aspx" },
+  { code: "LA", name: "Louisiana", url: "https://coraweb.sos.la.gov/commercialsearch/commercialsearch.aspx" },
+  { code: "ME", name: "Maine", url: "https://icrs.informe.org/nei-sos-icrs/ICRS" },
+  { code: "MD", name: "Maryland", url: "https://egov.maryland.gov/BusinessExpress/EntitySearch" },
+  { code: "MA", name: "Massachusetts", url: "https://corp.sec.state.ma.us/corpweb/CorpSearch/CorpSearch.aspx" },
+  { code: "MI", name: "Michigan", url: "https://cofs.lara.state.mi.us/SearchApi/Search/Search" },
+  { code: "MN", name: "Minnesota", url: "https://mblsportal.sos.state.mn.us/Business/Search" },
+  { code: "MS", name: "Mississippi", url: "https://corp.sos.ms.gov/corp/portal/c/page/corpBusinessIdSearch/portal.aspx" },
+  { code: "MO", name: "Missouri", url: "https://bsd.sos.mo.gov/BusinessEntity/BESearch.aspx" },
+  { code: "MT", name: "Montana", url: "https://biz.sosmt.gov/search" },
+  { code: "NE", name: "Nebraska", url: "https://www.nebraska.gov/sos/corp/corpsearch.cgi" },
+  { code: "NV", name: "Nevada", url: "https://esos.nv.gov/EntitySearch/OnlineEntitySearch" },
+  { code: "NH", name: "New Hampshire", url: "https://quickstart.sos.nh.gov/online/BusinessInquire" },
+  { code: "NJ", name: "New Jersey", url: "https://www.njportal.com/DOR/BusinessNameSearch/" },
+  { code: "NM", name: "New Mexico", url: "https://portal.sos.state.nm.us/BFS/online/CorporationBusinessSearch" },
+  { code: "NY", name: "New York", url: "https://appext20.dos.ny.gov/corp_public/CORPSEARCH.ENTITY_SEARCH_ENTRY" },
+  { code: "NC", name: "North Carolina", url: "https://www.sosnc.gov/search/index/corp" },
+  { code: "ND", name: "North Dakota", url: "https://firststop.sos.nd.gov/search/business" },
+  { code: "OH", name: "Ohio", url: "https://businesssearch.ohiosos.gov/" },
+  { code: "OK", name: "Oklahoma", url: "https://www.sos.ok.gov/corp/corpinquiryfind.aspx" },
+  { code: "OR", name: "Oregon", url: "https://sos.oregon.gov/business/pages/find.aspx" },
+  { code: "PA", name: "Pennsylvania", url: "https://www.corporations.pa.gov/search/corpsearch" },
+  { code: "RI", name: "Rhode Island", url: "https://business.sos.ri.gov/CorpWeb/CorpSearch/CorpSearch.aspx" },
+  { code: "SC", name: "South Carolina", url: "https://businessfilings.sc.gov/businessfiling/Entity/Search" },
+  { code: "SD", name: "South Dakota", url: "https://sosenterprise.sd.gov/BusinessServices/Business/FilingSearch.aspx" },
+  { code: "TN", name: "Tennessee", url: "https://tnbear.tn.gov/Ecommerce/FilingSearch.aspx" },
+  { code: "TX", name: "Texas", url: "https://mycpa.cpa.state.tx.us/coa/coaSearchBtn" },
+  { code: "UT", name: "Utah", url: "https://secure.utah.gov/bes/index.html" },
+  { code: "VT", name: "Vermont", url: "https://bizfilings.vermont.gov/online/BusinessInquire" },
+  { code: "VA", name: "Virginia", url: "https://cis.scc.virginia.gov/EntitySearch/Index" },
+  { code: "WA", name: "Washington", url: "https://ccfs.sos.wa.gov/#/" },
+  { code: "WV", name: "West Virginia", url: "https://apps.wv.gov/SOS/BusinessEntitySearch/" },
+  { code: "WI", name: "Wisconsin", url: "https://www.wdfi.org/apps/CorpSearch/Search.aspx" },
+  { code: "WY", name: "Wyoming", url: "https://wyobiz.wyo.gov/Business/FilingSearch.aspx" },
+  { code: "DC", name: "Washington D.C.", url: "https://corponline.dcra.dc.gov/BizEntity.aspx/ViewEntityData" },
+];
+
+const INDUSTRIES = [
+  "Technology", "Healthcare", "Finance", "Education", "E-commerce", "Food & Beverage",
+  "Real Estate", "Marketing", "Fitness & Wellness", "Media & Entertainment",
+  "Sustainability", "Travel", "SaaS", "Consumer Products", "Professional Services", "Other"
+];
+
+const TONES = [
+  { value: "professional", label: "Professional", desc: "Clean, trustworthy" },
+  { value: "playful", label: "Playful", desc: "Fun, approachable" },
+  { value: "techy", label: "Techy", desc: "Modern, innovative" },
+  { value: "bold", label: "Bold", desc: "Strong, commanding" },
+  { value: "minimal", label: "Minimal", desc: "Simple, elegant" },
+];
+
+// ─── Main App ─────────────────────────────────────────────────────────
+function NameVetter() {
+  const [description, setDescription] = useState("");
+  const [industry, setIndustry] = useState("Technology");
+  const [tone, setTone] = useState("professional");
+  const [keywordInput, setKeywordInput] = useState("");
+  const [keywords, setKeywords] = useState([]);
+  const [generatedNames, setGeneratedNames] = useState([]);
+  const [favorites, setFavorites] = useState([]);
+  const [domainResults, setDomainResults] = useState({});
+  const [similarDomains, setSimilarDomains] = useState({});
+  const [socialResults, setSocialResults] = useState({});
+  const [expandedCard, setExpandedCard] = useState(null);
+  const [loadingDomains, setLoadingDomains] = useState({});
+  const [loadingSocial, setLoadingSocial] = useState({});
+  const [selectedState, setSelectedState] = useState("DE");
+  const [activeTab, setActiveTab] = useState("generate");
+  const [hasGenerated, setHasGenerated] = useState(false);
+  const resultsRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  // Custom name vetting
+  const [customNameInput, setCustomNameInput] = useState("");
+  const [customNames, setCustomNames] = useState([]);
+
+  // Document context state
+  const [uploadedDocs, setUploadedDocs] = useState([]);
+  const [docContext, setDocContext] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [showContextPanel, setShowContextPanel] = useState(false);
+
+  // ─── File Upload Handling ───────────────────────────────────────
+  const handleFileRead = useCallback((file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target.result;
+      const parsed = parseMarkdownContext(text);
+      setDocContext(prev => mergeContexts(prev, parsed));
+      setUploadedDocs(prev => [...prev, {
+        name: file.name,
+        size: file.size,
+        preview: text.slice(0, 200),
+        keywordCount: parsed.topKeywords.length,
+        headingCount: parsed.headings.length,
+      }]);
+    };
+    reader.readAsText(file);
+  }, []);
+
+  const handleFileDrop = useCallback((e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = Array.from(e.dataTransfer?.files || []);
+    files.forEach(f => {
+      if (f.name.endsWith(".md") || f.name.endsWith(".txt") || f.name.endsWith(".markdown")) {
+        handleFileRead(f);
+      }
+    });
+  }, [handleFileRead]);
+
+  const handleFileSelect = useCallback((e) => {
+    const files = Array.from(e.target.files || []);
+    files.forEach(f => handleFileRead(f));
+    e.target.value = "";
+  }, [handleFileRead]);
+
+  const removeDoc = (idx) => {
+    setUploadedDocs(prev => prev.filter((_, i) => i !== idx));
+    // Re-parse remaining docs would require storing raw text; for now just clear and warn
+    if (uploadedDocs.length <= 1) {
+      setDocContext(null);
+    }
+  };
+
+  const clearAllDocs = () => {
+    setUploadedDocs([]);
+    setDocContext(null);
+  };
+
+  // Extra keywords derived from document context
+  const contextKeywords = useMemo(() => {
+    if (!docContext) return [];
+    return docContext.topKeywords.slice(0, 5).map(k => k.word);
+  }, [docContext]);
+
+  // ─── Custom Name Vetting ──────────────────────────────────────
+  const handleAddCustomName = (e) => {
+    if (e.key === "Enter" && customNameInput.trim()) {
+      e.preventDefault();
+      const name = customNameInput.trim();
+      if (!customNames.includes(name)) {
+        setCustomNames(prev => [...prev, name]);
+        runAllChecks(name);
+      }
+      setCustomNameInput("");
+    }
+  };
+
+  const addCustomName = () => {
+    const name = customNameInput.trim();
+    if (name && !customNames.includes(name)) {
+      setCustomNames(prev => [...prev, name]);
+      runAllChecks(name);
+      setCustomNameInput("");
+    }
+  };
+
+  const removeCustomName = (name) => {
+    setCustomNames(prev => prev.filter(n => n !== name));
+  };
+
+  const handleAddKeyword = (e) => {
+    if (e.key === "Enter" && keywordInput.trim()) {
+      e.preventDefault();
+      if (!keywords.includes(keywordInput.trim().toLowerCase())) {
+        setKeywords([...keywords, keywordInput.trim().toLowerCase()]);
+      }
+      setKeywordInput("");
+    }
+  };
+
+  const removeKeyword = (kw) => setKeywords(keywords.filter(k => k !== kw));
+
+  const handleGenerate = () => {
+    if (!description.trim() && keywords.length === 0 && contextKeywords.length === 0) return;
+    const names = generateNames(description, industry, tone, keywords, contextKeywords);
+    setGeneratedNames(names);
+    setHasGenerated(true);
+    setExpandedCard(null);
+    names.forEach(name => runAllChecks(name));
+    setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+  };
+
+  // ─── Backend API URL ─────────────────────────────────────────────
+  const API_BASE = "http://localhost:5111";
+  const [backendStatus, setBackendStatus] = useState("checking"); // checking | online | offline
+
+  // Check if backend is running on mount
+  useState(() => {
+    fetch(`${API_BASE}/api/health`)
+      .then(r => r.ok ? setBackendStatus("online") : setBackendStatus("offline"))
+      .catch(() => setBackendStatus("offline"));
+  });
+
+  // ─── Unified Check via Python Backend ───────────────────────────
+  const runAllChecks = async (name) => {
+    const handle = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (domainResults[handle] && socialResults[handle]) return;
+
+    setLoadingDomains(prev => ({ ...prev, [handle]: true }));
+    setLoadingSocial(prev => ({ ...prev, [handle]: true }));
+
+    // Try backend first
+    if (backendStatus !== "offline") {
+      try {
+        const r = await fetch(`${API_BASE}/api/check`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+          signal: AbortSignal.timeout(30000),
+        });
+
+        if (r.ok) {
+          const data = await r.json();
+          setBackendStatus("online");
+
+          // Map domain results
+          const dr = {};
+          Object.entries(data.domains || {}).forEach(([ext, info]) => {
+            dr[ext] = info.status;
+          });
+          setDomainResults(prev => ({ ...prev, [handle]: { ...dr, _details: data.domains } }));
+
+          // Map social results
+          const sr = {};
+          Object.entries(data.social || {}).forEach(([platform, info]) => {
+            sr[platform] = info.status;
+          });
+          setSocialResults(prev => ({ ...prev, [handle]: sr }));
+
+          // Similar domains
+          setSimilarDomains(prev => ({ ...prev, [handle]: data.similar || [] }));
+
+          setLoadingDomains(prev => ({ ...prev, [handle]: false }));
+          setLoadingSocial(prev => ({ ...prev, [handle]: false }));
+          return;
+        }
+      } catch {
+        setBackendStatus("offline");
+      }
+    }
+
+    // Fallback: client-side checks (limited by CORS)
+    try {
+      const resp = await fetch(`https://api.domainsdb.info/v1/domains/search?domain=${handle}&zone=com`, { signal: AbortSignal.timeout(6000) });
+      const data = await resp.json();
+      const found = (data.domains || []).map(d => d.domain);
+      const results = {};
+      DOMAIN_EXTENSIONS.forEach(ext => {
+        results[ext] = found.some(d => d === handle + ext) ? "taken" : "unknown";
+      });
+      setDomainResults(prev => ({ ...prev, [handle]: results }));
+      const similar = (data.domains || [])
+        .filter(d => { const base = d.domain.split(".")[0]; return levenshtein(handle, base) > 0 && levenshtein(handle, base) <= 3; })
+        .slice(0, 5).map(d => ({ domain: d.domain, distance: levenshtein(handle, d.domain.split(".")[0]) }));
+      setSimilarDomains(prev => ({ ...prev, [handle]: similar }));
+    } catch {
+      const results = {};
+      DOMAIN_EXTENSIONS.forEach(ext => { results[ext] = "unknown"; });
+      setDomainResults(prev => ({ ...prev, [handle]: results }));
+    }
+    // Social: all unknown in fallback mode
+    const sr = {};
+    SOCIAL_PLATFORMS.forEach(p => { sr[p.name] = "unknown"; });
+    setSocialResults(prev => ({ ...prev, [handle]: sr }));
+
+    setLoadingDomains(prev => ({ ...prev, [handle]: false }));
+    setLoadingSocial(prev => ({ ...prev, [handle]: false }));
+  };
+
+  const toggleFavorite = (name) => {
+    setFavorites(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]);
+  };
+
+  const exportFavorites = () => {
+    const handle = (n) => n.toLowerCase().replace(/[^a-z0-9]/g, "");
+    let csv = "Name,Handle,Alignment Score,.com,.co,.io,.net,.org,.ai,USPTO Link,Instagram,TikTok,YouTube,X,Facebook,LinkedIn,Threads\n";
+    favorites.forEach(name => {
+      const h = handle(name);
+      const dr = domainResults[h] || {};
+      const alignment = scoreAlignment(name, docContext);
+      const row = [
+        name, h, alignment ? `${alignment.score}%` : "N/A",
+        ...DOMAIN_EXTENSIONS.map(ext => dr[ext] || "unchecked"),
+        `https://tmsearch.uspto.gov/bin/gate.exe?f=searchss&state=4801:1.1.1&p_s_PARA1=${encodeURIComponent(name)}`,
+        ...SOCIAL_PLATFORMS.map(p => p.urlTemplate(h))
+      ];
+      csv += row.join(",") + "\n";
+    });
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "name-vetter-favorites.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const copyFavoritesToClipboard = () => {
+    const text = favorites.join("\n");
+    navigator.clipboard?.writeText(text);
+  };
+
+  const selectedStateObj = US_STATES.find(s => s.code === selectedState);
+
+  // Sort generated names by alignment score if context exists
+  const sortedNames = useMemo(() => {
+    if (!docContext) return generatedNames;
+    return [...generatedNames].sort((a, b) => {
+      const sa = scoreAlignment(a, docContext)?.score || 0;
+      const sb = scoreAlignment(b, docContext)?.score || 0;
+      return sb - sa;
+    });
+  }, [generatedNames, docContext]);
+
+  // ─── Render ───────────────────────────────────────────────────────
+  return (
+    <div className="min-h-screen bg-gray-950 text-gray-100" style={{ fontFamily: "'Inter', system-ui, -apple-system, sans-serif" }}>
+      {/* Header */}
+      <div className="border-b border-gray-800 bg-gray-950/80 backdrop-blur-sm sticky top-0 z-50">
+        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center text-lg font-bold">N</div>
+            <div>
+              <h1 className="text-lg font-semibold tracking-tight">NameVetter</h1>
+              <p className="text-xs text-gray-500">Ideate &amp; validate startup names</p>
+            </div>
+            {/* Backend status dot */}
+            <div className="flex items-center gap-1.5 ml-3" title={backendStatus === "online" ? "Backend server connected - real checks active" : backendStatus === "offline" ? "Backend offline - run: python server.py" : "Checking backend..."}>
+              <div className={`w-2 h-2 rounded-full ${backendStatus === "online" ? "bg-green-400" : backendStatus === "offline" ? "bg-red-400" : "bg-yellow-400"}`} />
+              <span className="text-[10px] text-gray-500">{backendStatus === "online" ? "Live checks" : backendStatus === "offline" ? "Server offline" : "..."}</span>
+            </div>
+          </div>
+          <div className="flex gap-1 bg-gray-900 rounded-lg p-1">
+            <button
+              onClick={() => setActiveTab("generate")}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${activeTab === "generate" ? "bg-gray-700 text-white" : "text-gray-400 hover:text-gray-200"}`}
+            >Generate</button>
+            <button
+              onClick={() => setActiveTab("vet")}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${activeTab === "vet" ? "bg-gray-700 text-white" : "text-gray-400 hover:text-gray-200"}`}
+            >
+              Vet
+              {customNames.length > 0 && (
+                <span className="bg-amber-600 text-white text-xs px-1.5 py-0.5 rounded-full">{customNames.length}</span>
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab("context")}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${activeTab === "context" ? "bg-gray-700 text-white" : "text-gray-400 hover:text-gray-200"}`}
+            >
+              Context
+              {uploadedDocs.length > 0 && (
+                <span className="bg-emerald-600 text-white text-xs px-1.5 py-0.5 rounded-full">{uploadedDocs.length}</span>
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab("favorites")}
+              className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${activeTab === "favorites" ? "bg-gray-700 text-white" : "text-gray-400 hover:text-gray-200"}`}
+            >
+              Favorites
+              {favorites.length > 0 && (
+                <span className="bg-indigo-600 text-white text-xs px-1.5 py-0.5 rounded-full">{favorites.length}</span>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-6 py-8">
+
+        {/* ─── CONTEXT TAB ────────────────────────────────────────── */}
+        {activeTab === "context" && (
+          <div>
+            <div className="mb-6">
+              <h2 className="text-base font-semibold text-gray-200 mb-1">Company Context Documents</h2>
+              <p className="text-sm text-gray-500">Upload markdown files (.md, .txt) with your business plan, mission statement, brand guidelines, or company goals. The scoring engine uses this to rank how well each name aligns with your vision.</p>
+            </div>
+
+            {/* Drop Zone */}
+            <div
+              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={handleFileDrop}
+              onClick={() => fileInputRef.current?.click()}
+              className={`border-2 border-dashed rounded-2xl p-12 text-center cursor-pointer transition-all ${isDragging ? "border-indigo-500 bg-indigo-500/10" : "border-gray-700 hover:border-gray-600 bg-gray-900"}`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".md,.txt,.markdown"
+                multiple
+                onChange={handleFileSelect}
+                className="hidden"
+              />
+              <div className="text-4xl mb-3">{isDragging ? "+" : "^"}</div>
+              <p className="text-sm text-gray-300 font-medium mb-1">
+                {isDragging ? "Drop files here" : "Drop markdown files here or click to browse"}
+              </p>
+              <p className="text-xs text-gray-500">Supports .md, .txt, .markdown</p>
+            </div>
+
+            {/* Uploaded Documents */}
+            {uploadedDocs.length > 0 && (
+              <div className="mt-6">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-gray-300">{uploadedDocs.length} document{uploadedDocs.length > 1 ? "s" : ""} loaded</h3>
+                  <button onClick={clearAllDocs} className="text-xs text-red-400 hover:text-red-300">Clear all</button>
+                </div>
+                <div className="space-y-2">
+                  {uploadedDocs.map((doc, idx) => (
+                    <div key={idx} className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-sm font-medium text-white truncate">{doc.name}</span>
+                          <span className="text-[10px] text-gray-500">{(doc.size / 1024).toFixed(1)} KB</span>
+                        </div>
+                        <p className="text-xs text-gray-500 truncate">{doc.preview}...</p>
+                        <div className="flex gap-3 mt-2">
+                          <span className="text-[10px] text-emerald-400">{doc.headingCount} headings</span>
+                          <span className="text-[10px] text-blue-400">{doc.keywordCount} keywords extracted</span>
+                        </div>
+                      </div>
+                      <button onClick={() => removeDoc(idx)} className="text-gray-500 hover:text-red-400 ml-3 text-sm">x</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Context Analysis Panel */}
+            {docContext && (
+              <div className="mt-6 bg-gray-900 border border-gray-800 rounded-2xl p-6">
+                <h3 className="text-sm font-semibold text-gray-200 mb-4">Extracted Context Analysis</h3>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Top Keywords */}
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Top Keywords (used in name generation)</h4>
+                    <div className="flex flex-wrap gap-1.5">
+                      {docContext.topKeywords.slice(0, 15).map(({ word, count }, idx) => (
+                        <span
+                          key={word}
+                          className={`px-2 py-1 rounded-md text-xs font-mono ${idx < 5 ? "bg-emerald-900/40 text-emerald-300 border border-emerald-800" : "bg-gray-800 text-gray-400 border border-gray-700"}`}
+                        >
+                          {word} <span className="text-gray-500">({count})</span>
+                        </span>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-gray-600 mt-1.5">Top 5 keywords (green) are injected into name generation</p>
+                  </div>
+
+                  {/* Key Themes (Headings) */}
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Key Themes (from headings)</h4>
+                    {docContext.headings.length > 0 ? (
+                      <div className="space-y-1">
+                        {docContext.headings.slice(0, 8).map((h, idx) => (
+                          <div key={idx} className="text-xs text-gray-300 bg-gray-800/50 rounded-lg px-3 py-1.5">{h}</div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-500">No headings found in documents</p>
+                    )}
+                  </div>
+
+                  {/* Tone Signals */}
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Detected Tone Signals</h4>
+                    <div className="flex flex-wrap gap-1.5">
+                      {Object.entries(docContext.toneSignals).map(([tone, active]) => (
+                        <span
+                          key={tone}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium ${active ? "bg-indigo-900/40 text-indigo-300 border border-indigo-800" : "bg-gray-800/30 text-gray-600 border border-gray-800"}`}
+                        >
+                          {capitalize(tone)} {active ? "+" : "-"}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Industry Signals */}
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Detected Industries</h4>
+                    {docContext.industrySignals.length > 0 ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {docContext.industrySignals.map(ind => (
+                          <span key={ind} className="bg-purple-900/40 text-purple-300 border border-purple-800 px-2.5 py-1 rounded-lg text-xs font-medium">{ind}</span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-gray-500">No specific industry signals detected</p>
+                    )}
+                  </div>
+
+                  {/* Bold / Emphasized Phrases */}
+                  {docContext.boldPhrases.length > 0 && (
+                    <div className="md:col-span-2">
+                      <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Emphasized Phrases (from bold text)</h4>
+                      <div className="flex flex-wrap gap-1.5">
+                        {docContext.boldPhrases.slice(0, 12).map((phrase, idx) => (
+                          <span key={idx} className="bg-yellow-900/30 text-yellow-300 border border-yellow-800 px-2.5 py-1 rounded-lg text-xs">{phrase}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── VET TAB ─────────────────────────────────────────────── */}
+        {activeTab === "vet" && (
+          <div>
+            <div className="mb-6">
+              <h2 className="text-base font-semibold text-gray-200 mb-1">Vet Your Own Names</h2>
+              <p className="text-sm text-gray-500">Enter specific names you're considering. Each one gets the full treatment: domain checks, social media handles, government registration, alignment scoring, and similar name analysis.</p>
+            </div>
+
+            {backendStatus === "offline" && (
+              <div className="bg-red-900/20 border border-red-800 rounded-xl px-4 py-3 mb-6">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-red-600/30 flex items-center justify-center text-sm shrink-0 mt-0.5">!</div>
+                  <div>
+                    <p className="text-sm font-medium text-red-300">Backend server not running</p>
+                    <p className="text-xs text-red-400 mt-1">Without the server, checks rely on browser requests which most platforms block (CORS). For accurate green/red results, start the server:</p>
+                    <code className="block mt-2 bg-gray-900 text-gray-300 px-3 py-2 rounded-lg text-xs font-mono">python server.py</code>
+                    <p className="text-[10px] text-red-500 mt-1.5">Then refresh this page. The status dot in the header will turn green.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {backendStatus === "online" && (
+              <div className="bg-green-900/15 border border-green-800 rounded-xl px-4 py-3 mb-6 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-green-600/30 flex items-center justify-center text-sm shrink-0">&#10003;</div>
+                <div>
+                  <p className="text-sm font-medium text-green-300">Backend connected - live checking active</p>
+                  <p className="text-xs text-green-500">Domains checked via RDAP + WHOIS + DNS. Social media checked via real HTTP requests. Results are accurate.</p>
+                </div>
+              </div>
+            )}
+
+            {/* Name Input */}
+            <div className="bg-gray-900 rounded-2xl border border-gray-800 p-6 mb-8">
+              <label className="text-xs font-medium text-gray-400 mb-2 block">Enter a company name (press Enter or click Vet)</label>
+              <div className="flex gap-3">
+                <input
+                  value={customNameInput}
+                  onChange={(e) => setCustomNameInput(e.target.value)}
+                  onKeyDown={handleAddCustomName}
+                  placeholder="e.g., Acme, Luminary, Greenvault..."
+                  className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                />
+                <button
+                  onClick={addCustomName}
+                  disabled={!customNameInput.trim()}
+                  className="bg-amber-600 hover:bg-amber-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-semibold px-6 py-3 rounded-xl transition-all text-sm whitespace-nowrap"
+                >
+                  Vet Name
+                </button>
+              </div>
+              <p className="text-[10px] text-gray-600 mt-2">You can add multiple names. Each will be checked independently.</p>
+
+              {/* State selector for gov lookup */}
+              <div className="mt-4">
+                <label className="text-xs font-medium text-gray-400 mb-1.5 block">State (for gov lookup)</label>
+                <select
+                  value={selectedState}
+                  onChange={(e) => setSelectedState(e.target.value)}
+                  className="w-full md:w-64 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                >
+                  {US_STATES.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {/* Context hint */}
+            {!docContext && customNames.length > 0 && (
+              <div
+                className="bg-gray-900 border border-dashed border-gray-700 rounded-xl px-4 py-3 mb-6 flex items-center justify-between cursor-pointer hover:border-gray-600 transition-all"
+                onClick={() => setActiveTab("context")}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-gray-800 flex items-center justify-center text-sm text-gray-500">^</div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-400">Want alignment scores?</p>
+                    <p className="text-xs text-gray-600">Upload context docs in the Context tab to see how well each name fits your company</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Vetted Names */}
+            {customNames.length === 0 ? (
+              <div className="text-center py-16 text-gray-500">
+                <p className="text-4xl mb-3">?</p>
+                <p className="text-lg mb-2">No names to vet yet</p>
+                <p className="text-sm">Type a name above and press Enter to start vetting.</p>
+              </div>
+            ) : (
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-base font-semibold text-gray-200">{customNames.length} name{customNames.length > 1 ? "s" : ""} vetted</h3>
+                  <button
+                    onClick={() => setCustomNames([])}
+                    className="text-xs text-red-400 hover:text-red-300 font-medium"
+                  >Clear all</button>
+                </div>
+                <div className="flex items-center gap-4 mb-5 px-1">
+                  <div className="flex items-center gap-1.5 text-xs"><span className="text-green-400 font-bold">&#10003;</span><span className="text-gray-400">Available</span></div>
+                  <div className="flex items-center gap-1.5 text-xs"><span className="text-red-400 font-bold">&#10007;</span><span className="text-gray-400">Taken</span></div>
+                  <div className="flex items-center gap-1.5 text-xs"><span className="text-yellow-400 font-bold">?</span><span className="text-gray-400">Needs manual check</span></div>
+                </div>
+
+                <div className="space-y-6">
+                  {customNames.map((name) => {
+                    const handle = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+                    const dr = domainResults[handle] || {};
+                    const sr = socialResults[handle] || {};
+                    const isLoadingD = loadingDomains[handle];
+                    const isLoadingS = loadingSocial[handle];
+                    const isFav = favorites.includes(name);
+                    const similar = similarDomains[handle] || [];
+                    const alignment = scoreAlignment(name, docContext);
+
+                    const StatusIcon = ({ status }) => {
+                      if (status === "available") return <span className="text-green-400 font-bold" title="Available">&#10003;</span>;
+                      if (status === "taken") return <span className="text-red-400 font-bold" title="Taken">&#10007;</span>;
+                      return <span className="text-yellow-400 font-bold" title="Needs manual check">?</span>;
+                    };
+
+                    const statusBorder = (status) => {
+                      if (status === "available") return "border-green-800 bg-green-900/20";
+                      if (status === "taken") return "border-red-800 bg-red-900/20";
+                      return "border-yellow-800 bg-yellow-900/20";
+                    };
+
+                    // Count totals for summary
+                    const domainAvail = Object.values(dr).filter(v => v === "available").length;
+                    const domainTaken = Object.values(dr).filter(v => v === "taken").length;
+                    const domainUnknown = DOMAIN_EXTENSIONS.length - domainAvail - domainTaken;
+                    const socialChecked = Object.keys(sr).length;
+                    const socialTaken = Object.values(sr).filter(v => v === "taken").length;
+                    const socialAvail = Object.values(sr).filter(v => v === "available").length;
+                    const socialUnknown = socialChecked - socialTaken - socialAvail;
+
+                    return (
+                      <div key={name} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+                        {/* Card Header */}
+                        <div className="p-5 flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <button onClick={() => toggleFavorite(name)} className="text-2xl" title={isFav ? "Remove from favorites" : "Add to favorites"}>
+                              {isFav ? "★" : "☆"}
+                            </button>
+                            <div>
+                              <h3 className="text-xl font-bold text-white">{name}</h3>
+                              <p className="text-xs text-gray-500">@{handle}</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {alignment && (
+                              <div className={`px-3 py-1.5 rounded-lg border text-xs font-semibold ${alignment.bgColor} ${alignment.color}`} title={alignment.reasons.join(", ")}>
+                                {alignment.score}% {alignment.label}
+                              </div>
+                            )}
+                            <button onClick={() => removeCustomName(name)} className="text-xs text-gray-500 hover:text-red-400 bg-gray-800 px-2.5 py-1.5 rounded-lg transition-all">x</button>
+                          </div>
+                        </div>
+
+                        {/* Alignment Bar */}
+                        {alignment && (
+                          <div className="px-5 pb-3">
+                            <div className="w-full bg-gray-800 rounded-full h-1.5">
+                              <div className={`h-1.5 rounded-full transition-all ${alignment.barColor}`} style={{ width: `${alignment.score}%` }} />
+                            </div>
+                            {alignment.reasons.length > 0 && (
+                              <div className="flex flex-wrap gap-2 mt-2">
+                                {alignment.reasons.map((r, idx) => (
+                                  <span key={idx} className="text-[10px] text-gray-500">{r}</span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* ── DOMAINS SECTION ─────────────────────── */}
+                        <div className="border-t border-gray-800 p-5">
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Domains</h4>
+                            {!isLoadingD && (
+                              <div className="flex gap-2 text-[10px]">
+                                {domainAvail > 0 && <span className="text-green-400">{domainAvail} available</span>}
+                                {domainTaken > 0 && <span className="text-red-400">{domainTaken} taken</span>}
+                                {domainUnknown > 0 && <span className="text-yellow-400">{domainUnknown} check manually</span>}
+                              </div>
+                            )}
+                          </div>
+                          {isLoadingD ? (
+                            <div className="text-xs text-gray-500 py-2">{backendStatus === "online" ? "Querying RDAP + WHOIS + DNS..." : "Checking domains (limited mode)..."}</div>
+                          ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              {DOMAIN_EXTENSIONS.map(ext => {
+                                const status = dr[ext] || "unknown";
+                                const details = dr._details?.[ext]?.details || {};
+                                return (
+                                  <a
+                                    key={ext}
+                                    href={`https://www.namecheap.com/domains/registration/results/?domain=${handle}${ext}`}
+                                    target="_blank" rel="noopener noreferrer"
+                                    className={`flex items-center justify-between border rounded-lg px-3 py-2.5 hover:opacity-80 transition-all ${statusBorder(status)}`}
+                                  >
+                                    <div>
+                                      <span className="text-sm font-mono text-gray-200">{handle}{ext}</span>
+                                      {details.registrar && <span className="block text-[10px] text-gray-500 mt-0.5">via {details.registrar}</span>}
+                                      {details.expires && <span className="block text-[10px] text-gray-500">exp {details.expires}</span>}
+                                    </div>
+                                    <StatusIcon status={status} />
+                                  </a>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {!isLoadingD && (
+                            <div className="flex gap-2 mt-3">
+                              <a href={`https://www.namecheap.com/domains/registration/results/?domain=${handle}.com`} target="_blank" rel="noopener noreferrer" className="text-[10px] text-orange-400 hover:text-orange-300">Namecheap</a>
+                              <span className="text-gray-700">|</span>
+                              <a href={`https://www.godaddy.com/domainsearch/find?domainToCheck=${handle}.com`} target="_blank" rel="noopener noreferrer" className="text-[10px] text-teal-400 hover:text-teal-300">GoDaddy</a>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* ── SOCIAL MEDIA SECTION ────────────────── */}
+                        <div className="border-t border-gray-800 p-5">
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Social Media (@{handle})</h4>
+                            {!isLoadingS && socialChecked > 0 && (
+                              <div className="flex gap-2 text-[10px]">
+                                {socialAvail > 0 && <span className="text-green-400">{socialAvail} available</span>}
+                                {socialTaken > 0 && <span className="text-red-400">{socialTaken} taken</span>}
+                                {socialUnknown > 0 && <span className="text-yellow-400">{socialUnknown} check manually</span>}
+                              </div>
+                            )}
+                          </div>
+                          {isLoadingS ? (
+                            <div className="text-xs text-gray-500 py-2">{backendStatus === "online" ? "Checking handles via server..." : "Checking social handles (limited mode)..."}</div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-2">
+                              {SOCIAL_PLATFORMS.map(platform => {
+                                const status = sr[platform.name] || "unknown";
+                                return (
+                                  <a
+                                    key={platform.name}
+                                    href={platform.urlTemplate(handle)}
+                                    target="_blank" rel="noopener noreferrer"
+                                    className={`flex items-center justify-between border rounded-lg px-3 py-2.5 hover:opacity-80 transition-all ${statusBorder(status)}`}
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-bold text-gray-400 w-5 text-xs">{platform.icon}</span>
+                                      <span className="text-sm text-gray-200 font-medium">{platform.name}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      <StatusIcon status={status} />
+                                      {status === "unknown" && <span className="text-[9px] text-yellow-500">click to verify</span>}
+                                    </div>
+                                  </a>
+                                );
+                              })}
+                            </div>
+                          )}
+                          <p className="text-[10px] text-gray-600 mt-2">Yellow items need manual verification. Click to open the profile page directly.</p>
+                        </div>
+
+                        {/* ── REGISTRATION & TRADEMARK SECTION ──── */}
+                        <div className="border-t border-gray-800 p-5">
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Registration &amp; Trademark</h4>
+                            <span className="text-[10px] text-yellow-400">Requires manual check</span>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                            <a
+                              href={`https://tmsearch.uspto.gov/bin/gate.exe?f=searchss&state=4801:1.1.1&p_s_PARA1=${encodeURIComponent(name)}&p_s_PARA2=&p_s_PARA3=&p_s_PARA4=&p_s_PARA5=&p_s_PARA6=&p_s_PARA7=&p_s_PARA8=&p_s_PARA9=&p_s_PARA10=&a_default=search&a_search=Submit+Query&f=searchss&state=4801:1.1.1`}
+                              target="_blank" rel="noopener noreferrer"
+                              className="flex items-center justify-between border border-yellow-800 bg-yellow-900/20 rounded-lg px-3 py-2.5 hover:opacity-80 transition-all"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-gray-400 text-xs">TM</span>
+                                <span className="text-sm text-gray-200">USPTO Trademark</span>
+                              </div>
+                              <span className="text-yellow-400 font-bold">?</span>
+                            </a>
+                            <a
+                              href={selectedStateObj?.url || "#"}
+                              target="_blank" rel="noopener noreferrer"
+                              className="flex items-center justify-between border border-yellow-800 bg-yellow-900/20 rounded-lg px-3 py-2.5 hover:opacity-80 transition-all"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-gray-400 text-xs">SOS</span>
+                                <span className="text-sm text-gray-200">{selectedStateObj?.name || selectedState}</span>
+                              </div>
+                              <span className="text-yellow-400 font-bold">?</span>
+                            </a>
+                            <a
+                              href={`https://opencorporates.com/companies?q=${encodeURIComponent(name)}&jurisdiction_code=us`}
+                              target="_blank" rel="noopener noreferrer"
+                              className="flex items-center justify-between border border-yellow-800 bg-yellow-900/20 rounded-lg px-3 py-2.5 hover:opacity-80 transition-all"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-gray-400 text-xs">OC</span>
+                                <span className="text-sm text-gray-200">OpenCorporates</span>
+                              </div>
+                              <span className="text-yellow-400 font-bold">?</span>
+                            </a>
+                          </div>
+                        </div>
+
+                        {/* ── SIMILAR NAMES SECTION ────────────────── */}
+                        {similar.length > 0 && (
+                          <div className="border-t border-gray-800 p-5">
+                            <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Similar Registered Domains</h4>
+                            <div className="space-y-1.5">
+                              {similar.map((s, idx) => (
+                                <div key={idx} className="flex items-center justify-between bg-gray-800/50 rounded-lg px-3 py-2">
+                                  <span className="text-xs text-gray-300 font-mono">{s.domain}</span>
+                                  <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${s.distance <= 1 ? "bg-red-900/50 text-red-400" : s.distance <= 2 ? "bg-yellow-900/50 text-yellow-400" : "bg-gray-700 text-gray-400"}`}>
+                                    {s.distance <= 1 ? "Very close" : s.distance <= 2 ? "Close" : "Similar"}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ── GOOGLE SEARCH ────────────────────────── */}
+                        <div className="border-t border-gray-800 p-5">
+                          <a
+                            href={`https://www.google.com/search?q=${encodeURIComponent('"' + name + '" company OR brand OR business')}`}
+                            target="_blank" rel="noopener noreferrer"
+                            className="flex items-center justify-center gap-2 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-sm text-gray-300 hover:border-gray-600 hover:text-white transition-all"
+                          >
+                            Search Google for "{name}" as a company name
+                          </a>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── GENERATE TAB ───────────────────────────────────────── */}
+        {activeTab === "generate" && (
+          <>
+            {/* Context banner */}
+            {docContext && (
+              <div className="bg-emerald-900/20 border border-emerald-800 rounded-xl px-4 py-3 mb-6 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-600/30 flex items-center justify-center text-sm">+</div>
+                  <div>
+                    <p className="text-sm font-medium text-emerald-300">{uploadedDocs.length} context doc{uploadedDocs.length > 1 ? "s" : ""} loaded</p>
+                    <p className="text-xs text-emerald-500">{docContext.topKeywords.length} keywords extracted. Names will be scored for alignment.</p>
+                  </div>
+                </div>
+                <button onClick={() => setActiveTab("context")} className="text-xs text-emerald-400 hover:text-emerald-300 font-medium">View context</button>
+              </div>
+            )}
+
+            {!docContext && (
+              <div
+                className="bg-gray-900 border border-dashed border-gray-700 rounded-xl px-4 py-3 mb-6 flex items-center justify-between cursor-pointer hover:border-gray-600 transition-all"
+                onClick={() => setActiveTab("context")}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-gray-800 flex items-center justify-center text-sm text-gray-500">^</div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-400">Add context documents for smarter results</p>
+                    <p className="text-xs text-gray-600">Upload your business plan, mission statement, or brand guidelines to get alignment scores</p>
+                  </div>
+                </div>
+                <span className="text-xs text-gray-500">Upload</span>
+              </div>
+            )}
+
+            {/* Input Section */}
+            <div className="bg-gray-900 rounded-2xl border border-gray-800 p-6 mb-8">
+              <h2 className="text-base font-semibold mb-4 text-gray-200">Describe your company</h2>
+
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="What does your company do? Who is your target audience? What problem are you solving?"
+                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+                rows={3}
+              />
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                <div>
+                  <label className="text-xs font-medium text-gray-400 mb-1.5 block">Industry</label>
+                  <select
+                    value={industry}
+                    onChange={(e) => setIndustry(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    {INDUSTRIES.map(i => <option key={i} value={i}>{i}</option>)}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-gray-400 mb-1.5 block">Tone</label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {TONES.map(t => (
+                      <button
+                        key={t.value}
+                        onClick={() => setTone(t.value)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${tone === t.value ? "bg-indigo-600 text-white" : "bg-gray-800 text-gray-400 border border-gray-700 hover:border-gray-600"}`}
+                        title={t.desc}
+                      >{t.label}</button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium text-gray-400 mb-1.5 block">State (for gov lookup)</label>
+                  <select
+                    value={selectedState}
+                    onChange={(e) => setSelectedState(e.target.value)}
+                    className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    {US_STATES.map(s => <option key={s.code} value={s.code}>{s.name}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Keywords */}
+              <div className="mt-4">
+                <label className="text-xs font-medium text-gray-400 mb-1.5 block">Keywords (press Enter to add)</label>
+                <div className="flex flex-wrap items-center gap-2 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 min-h-10">
+                  {keywords.map(kw => (
+                    <span key={kw} className="bg-indigo-600/20 text-indigo-300 px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5">
+                      {kw}
+                      <button onClick={() => removeKeyword(kw)} className="text-indigo-400 hover:text-white">x</button>
+                    </span>
+                  ))}
+                  {/* Show context-derived keywords */}
+                  {contextKeywords.map(kw => (
+                    <span key={`ctx-${kw}`} className="bg-emerald-600/20 text-emerald-300 px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5">
+                      {kw}
+                      <span className="text-emerald-500 text-[9px]">doc</span>
+                    </span>
+                  ))}
+                  <input
+                    value={keywordInput}
+                    onChange={(e) => setKeywordInput(e.target.value)}
+                    onKeyDown={handleAddKeyword}
+                    placeholder={keywords.length === 0 && contextKeywords.length === 0 ? "e.g., fast, delivery, green..." : ""}
+                    className="bg-transparent text-sm text-gray-100 placeholder-gray-500 focus:outline-none flex-1 min-w-24"
+                  />
+                </div>
+                {contextKeywords.length > 0 && (
+                  <p className="text-[10px] text-emerald-600 mt-1">Green tags are auto-extracted from your uploaded documents</p>
+                )}
+              </div>
+
+              <button
+                onClick={handleGenerate}
+                disabled={!description.trim() && keywords.length === 0 && contextKeywords.length === 0}
+                className="mt-5 w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:text-gray-500 text-white font-semibold py-3 rounded-xl transition-all text-sm"
+              >
+                Generate Names
+              </button>
+            </div>
+
+            {/* Results */}
+            <div ref={resultsRef}>
+              {hasGenerated && sortedNames.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h2 className="text-base font-semibold text-gray-200">{sortedNames.length} names generated</h2>
+                      {docContext && <p className="text-xs text-gray-500">Sorted by alignment score (best match first)</p>}
+                    </div>
+                    <button
+                      onClick={handleGenerate}
+                      className="text-sm text-indigo-400 hover:text-indigo-300 font-medium"
+                    >Regenerate</button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {sortedNames.map((name) => {
+                      const handle = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+                      const dr = domainResults[handle] || {};
+                      const isLoading = loadingDomains[handle];
+                      const isFav = favorites.includes(name);
+                      const isExpanded = expandedCard === name;
+                      const similar = similarDomains[handle] || [];
+                      const alignment = scoreAlignment(name, docContext);
+
+                      return (
+                        <div
+                          key={name}
+                          className={`bg-gray-900 border rounded-xl transition-all ${isExpanded ? "border-indigo-500 ring-1 ring-indigo-500/30" : "border-gray-800 hover:border-gray-700"}`}
+                        >
+                          {/* Card Header */}
+                          <div className="p-4 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <button onClick={() => toggleFavorite(name)} className="text-xl" title={isFav ? "Remove from favorites" : "Add to favorites"}>
+                                {isFav ? "★" : "☆"}
+                              </button>
+                              <div>
+                                <h3 className="text-lg font-bold text-white">{name}</h3>
+                                <p className="text-xs text-gray-500">@{handle}</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {/* Alignment Score Badge */}
+                              {alignment && (
+                                <div className={`px-2.5 py-1 rounded-lg border text-xs font-semibold ${alignment.bgColor} ${alignment.color}`} title={alignment.reasons.join(", ")}>
+                                  {alignment.score}% {alignment.label}
+                                </div>
+                              )}
+                              <button
+                                onClick={() => setExpandedCard(isExpanded ? null : name)}
+                                className="text-xs font-medium text-gray-400 hover:text-white bg-gray-800 px-3 py-1.5 rounded-lg transition-all"
+                              >
+                                {isExpanded ? "Less" : "More"}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Alignment Bar (if context exists) */}
+                          {alignment && (
+                            <div className="px-4 pb-2">
+                              <div className="w-full bg-gray-800 rounded-full h-1.5">
+                                <div className={`h-1.5 rounded-full transition-all ${alignment.barColor}`} style={{ width: `${alignment.score}%` }} />
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Domain Badges */}
+                          <div className="px-4 pb-3 flex flex-wrap gap-1.5">
+                            {isLoading ? (
+                              <span className="text-xs text-gray-500">Checking domains...</span>
+                            ) : (
+                              DOMAIN_EXTENSIONS.map(ext => {
+                                const status = dr[ext];
+                                const bgColor = status === "taken" ? "bg-red-900/40 text-red-400 border-red-800" :
+                                  status === "available" ? "bg-green-900/40 text-green-400 border-green-800" :
+                                  "bg-gray-800 text-gray-500 border-gray-700";
+                                return (
+                                  <a
+                                    key={ext}
+                                    href={`https://www.namecheap.com/domains/registration/results/?domain=${handle}${ext}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className={`px-2 py-1 rounded-md text-xs font-mono border ${bgColor} hover:opacity-80 transition-all`}
+                                    title={`Check ${handle}${ext} on Namecheap`}
+                                  >
+                                    {ext} {status === "taken" ? "x" : status === "available" ? "+" : "?"}
+                                  </a>
+                                );
+                              })
+                            )}
+                          </div>
+
+                          {/* Expanded Details */}
+                          {isExpanded && (
+                            <div className="border-t border-gray-800 p-4 space-y-4">
+
+                              {/* Alignment Breakdown */}
+                              {alignment && alignment.reasons.length > 0 && (
+                                <div>
+                                  <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Alignment Breakdown</h4>
+                                  <div className="space-y-1">
+                                    {alignment.reasons.map((r, idx) => (
+                                      <div key={idx} className="flex items-center gap-2 text-xs text-gray-300">
+                                        <span className={`w-1.5 h-1.5 rounded-full ${alignment.barColor}`} />
+                                        {r}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Social Media */}
+                              <div>
+                                <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Social Media Handles</h4>
+                                <div className="grid grid-cols-2 gap-2">
+                                  {SOCIAL_PLATFORMS.map(platform => (
+                                    <a
+                                      key={platform.name}
+                                      href={platform.urlTemplate(handle)}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="flex items-center gap-2 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs hover:border-gray-600 transition-all"
+                                    >
+                                      <span className="font-bold text-gray-500 w-5">{platform.icon}</span>
+                                      <span className="text-gray-300 font-medium">{platform.name}</span>
+                                      <span className="ml-auto text-gray-500 text-[10px]">Check</span>
+                                    </a>
+                                  ))}
+                                </div>
+                                <p className="text-[10px] text-gray-600 mt-1.5">Click each to check if @{handle} is available</p>
+                              </div>
+
+                              {/* Government / Trademark */}
+                              <div>
+                                <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Registration &amp; Trademark</h4>
+                                <div className="flex flex-wrap gap-2">
+                                  <a
+                                    href={`https://tmsearch.uspto.gov/bin/gate.exe?f=searchss&state=4801:1.1.1&p_s_PARA1=${encodeURIComponent(name)}&p_s_PARA2=&p_s_PARA3=&p_s_PARA4=&p_s_PARA5=&p_s_PARA6=&p_s_PARA7=&p_s_PARA8=&p_s_PARA9=&p_s_PARA10=&a_default=search&a_search=Submit+Query&f=searchss&state=4801:1.1.1`}
+                                    target="_blank" rel="noopener noreferrer"
+                                    className="flex items-center gap-2 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs hover:border-gray-600 transition-all"
+                                  >
+                                    <span className="font-bold text-gray-500">TM</span>
+                                    <span className="text-gray-300 font-medium">USPTO Trademark Search</span>
+                                  </a>
+                                  <a
+                                    href={selectedStateObj?.url || "#"}
+                                    target="_blank" rel="noopener noreferrer"
+                                    className="flex items-center gap-2 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs hover:border-gray-600 transition-all"
+                                  >
+                                    <span className="font-bold text-gray-500">SOS</span>
+                                    <span className="text-gray-300 font-medium">{selectedStateObj?.name || selectedState} Business Search</span>
+                                  </a>
+                                  <a
+                                    href={`https://opencorporates.com/companies?q=${encodeURIComponent(name)}&jurisdiction_code=us`}
+                                    target="_blank" rel="noopener noreferrer"
+                                    className="flex items-center gap-2 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-xs hover:border-gray-600 transition-all"
+                                  >
+                                    <span className="font-bold text-gray-500">OC</span>
+                                    <span className="text-gray-300 font-medium">OpenCorporates Search</span>
+                                  </a>
+                                </div>
+                              </div>
+
+                              {/* Similar Names */}
+                              {similar.length > 0 && (
+                                <div>
+                                  <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Similar Registered Domains</h4>
+                                  <div className="space-y-1">
+                                    {similar.map((s, idx) => (
+                                      <div key={idx} className="flex items-center justify-between bg-gray-800/50 rounded-lg px-3 py-2">
+                                        <span className="text-xs text-gray-300 font-mono">{s.domain}</span>
+                                        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${s.distance <= 1 ? "bg-red-900/50 text-red-400" : s.distance <= 2 ? "bg-yellow-900/50 text-yellow-400" : "bg-gray-700 text-gray-400"}`}>
+                                          {s.distance <= 1 ? "Very close" : s.distance <= 2 ? "Close" : "Similar"}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Quick Domain Purchase Links */}
+                              <div>
+                                <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Buy Domain</h4>
+                                <div className="flex gap-2">
+                                  <a href={`https://www.namecheap.com/domains/registration/results/?domain=${handle}.com`} target="_blank" rel="noopener noreferrer" className="bg-orange-600/20 text-orange-300 border border-orange-800 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-orange-600/30 transition-all">Namecheap</a>
+                                  <a href={`https://www.godaddy.com/domainsearch/find?domainToCheck=${handle}.com`} target="_blank" rel="noopener noreferrer" className="bg-teal-600/20 text-teal-300 border border-teal-800 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-teal-600/30 transition-all">GoDaddy</a>
+                                  <a href={`https://www.google.com/search?q=${encodeURIComponent(name + " company")}`} target="_blank" rel="noopener noreferrer" className="bg-blue-600/20 text-blue-300 border border-blue-800 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-600/30 transition-all">Google It</a>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {hasGenerated && sortedNames.length === 0 && (
+                <div className="text-center py-16 text-gray-500">
+                  <p className="text-lg mb-2">No names generated</p>
+                  <p className="text-sm">Try adding more detail to your description or more keywords.</p>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ─── FAVORITES TAB ──────────────────────────────────────── */}
+        {activeTab === "favorites" && (
+          <div>
+            {favorites.length === 0 ? (
+              <div className="text-center py-20 text-gray-500">
+                <p className="text-5xl mb-4">*</p>
+                <p className="text-lg mb-2">No favorites yet</p>
+                <p className="text-sm">Star names from the Generate tab to add them here.</p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-base font-semibold text-gray-200">{favorites.length} favorites</h2>
+                  <div className="flex gap-2">
+                    <button onClick={copyFavoritesToClipboard} className="text-xs font-medium text-gray-400 hover:text-white bg-gray-800 border border-gray-700 px-3 py-1.5 rounded-lg">
+                      Copy to Clipboard
+                    </button>
+                    <button onClick={exportFavorites} className="text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 rounded-lg">
+                      Export CSV
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {favorites.map(name => {
+                    const handle = name.toLowerCase().replace(/[^a-z0-9]/g, "");
+                    const dr = domainResults[handle] || {};
+                    const alignment = scoreAlignment(name, docContext);
+                    return (
+                      <div key={name} className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <button onClick={() => toggleFavorite(name)} className="text-xl text-yellow-400">*</button>
+                          <div>
+                            <h3 className="font-bold text-white">{name}</h3>
+                            <p className="text-xs text-gray-500">@{handle}</p>
+                          </div>
+                          {alignment && (
+                            <span className={`px-2 py-0.5 rounded-md border text-[10px] font-semibold ${alignment.bgColor} ${alignment.color}`}>
+                              {alignment.score}%
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex gap-1.5">
+                          {DOMAIN_EXTENSIONS.map(ext => {
+                            const status = dr[ext];
+                            const bgColor = status === "taken" ? "bg-red-900/40 text-red-400" :
+                              status === "available" ? "bg-green-900/40 text-green-400" :
+                              "bg-gray-800 text-gray-500";
+                            return (
+                              <span key={ext} className={`px-2 py-1 rounded text-[10px] font-mono ${bgColor}`}>{ext}</span>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="border-t border-gray-800 mt-16">
+        <div className="max-w-6xl mx-auto px-6 py-4 text-center">
+          <p className="text-xs text-gray-600">
+            NameVetter v3.0 - Backend: RDAP + WHOIS + DNS for domains, HTTP for social media - Alignment scoring via document context
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<NameVetter />);
+  </script>
 </body>
 </html>
